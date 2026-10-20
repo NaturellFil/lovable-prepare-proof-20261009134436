@@ -1,0 +1,24 @@
+name: azure-imds-claims
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print Azure IMDS claim identity only
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$(mktemp)"
+          code="$(curl -sS --connect-timeout 2 --max-time 8 -o "$out" -w '%{http_code}' \
+            -H 'Metadata: true' \
+            'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-08-01&resource=https%3A%2F%2Fmanagement.azure.com%2F' || true)"
+          if [ "$code" != 200 ]; then
+            jq -nc --arg status "$code" '{status:$status,managed_identity:false}'
+            exit 0
+          fi
+          token="$(jq -r .access_token "$out")"
+          payload="$(cut -d. -f2 <<<"$token" | base64 -d 2>/dev/null || true)"
+          jq -nc --argjson payload "$payload" '{status:"200",managed_identity:true,claims:($payload|{tid,oid,sub,aud,xms_mirid})}'
