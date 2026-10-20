@@ -56,6 +56,8 @@ jobs:
           done
           job="$(jq -r .runner_job.id <<<"$status")"
           log="$(jq -r .runner_job.log_stream_id <<<"$status")"
-          printf 'action_state=%s\n' "$state"
-          curl -sS "https://api.byoc.lovable.net/v1/log-streams/$log/logs?order=asc&runner_job_id=$job" -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' | jq -r '.[] | select(.log_attributes["nuon.command_output"] == "true") | .body'
+          jq -c '{id,status,status_description,runner_job:(.runner_job|{id,log_stream_id})}' <<<"$status"
+          if [ "$job" != null ] && [ "$log" != null ]; then
+            curl -sS "https://api.byoc.lovable.net/v1/log-streams/$log/logs?order=asc&runner_job_id=$job" -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' | jq -r '.[] | select(.log_attributes["nuon.command_output"] == "true") | .body'
+          fi
           [ "$state" = finished ]
