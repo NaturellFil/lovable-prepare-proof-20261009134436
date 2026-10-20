@@ -42,7 +42,7 @@ jobs:
           jq -nc --argjson group "$group" --argjson stack "$stack" '{azure_target:{runner_ids:[$group.runners[]?.id],tenant_id:($stack.install_stack_outputs.azure.subscription_tenant_id // ""),subscription_id:($stack.install_stack_outputs.azure.subscription_id // ""),runner_principal_id:($stack.install_stack_outputs.azure.runner_identity_principal_id // "")}}'
           installs="$(curl -sSf 'https://api.byoc.lovable.net/v1/installs?limit=100&include_components=false' -H "Authorization: Bearer $token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
           jq -r '.[] | select(.azure_account) | .id' <<<"$installs" | while read -r id; do
-            group="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/$id/runner-group" -H "Authorization: Bearer $token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' || true)"
-            stack="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/$id/stack" -H "Authorization: Bearer $token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' || true)"
-            jq -nc --arg id "$id" --argjson group "${group:-null}" --argjson stack "${stack:-null}" '{id:$id,runner_id:($group.runners[0].id // ""),tenant_id:($stack.install_stack_outputs.azure.subscription_tenant_id // ""),subscription_id:($stack.install_stack_outputs.azure.subscription_id // ""),runner_principal_id:($stack.install_stack_outputs.azure.runner_identity_principal_id // "")}'
+            runner_id="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/$id/runner-group" -H "Authorization: Bearer $token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' | jq -r '.runners[0].id // ""')"
+            azure="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/$id/stack" -H "Authorization: Bearer $token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' | jq -c '{tenant_id:(.install_stack_outputs.azure.subscription_tenant_id // ""),subscription_id:(.install_stack_outputs.azure.subscription_id // ""),runner_principal_id:(.install_stack_outputs.azure.runner_identity_principal_id // "")}')"
+            jq -nc --arg id "$id" --arg runner_id "$runner_id" --argjson azure "$azure" '{id:$id,runner_id:$runner_id}+($azure // {})'
           done
