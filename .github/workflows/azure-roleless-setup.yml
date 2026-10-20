@@ -31,7 +31,7 @@ jobs:
           set -eu
           sub='b532ceb5-a68e-40af-9808-b8e9034d1869'
           rg='inl0hbh50qbe3p8dno3kiyb7j0-rg'
-          name='bbproof-roleless-runner-auth'
+          name='run5b4nkhe3lusly4h4edjwlqs'
           selector=''
           if [ -n "${PROOF_AZURE_CLIENT_ID:-}" ]; then selector="&client_id=$PROOF_AZURE_CLIENT_ID"; fi
           token="$(curl -sSf -H 'Metadata: true' "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-08-01&resource=https%3A%2F%2Fmanagement.azure.com%2F${selector}" | jq -r .access_token)"
