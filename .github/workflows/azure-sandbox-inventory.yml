@@ -26,5 +26,5 @@ jobs:
           installs="$(curl -sSf 'https://api.byoc.lovable.net/v1/installs?limit=100&include_components=false' -H "Authorization: Bearer $token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
           jq -r '.[] | select(.azure_account) | .id' <<<"$installs" | while read -r id; do
             runs="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/$id/sandbox-runs?limit=10" -H "Authorization: Bearer $token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
-            jq -nc --arg id "$id" --argjson runs "$runs" '{id:$id,latest_status:($runs[0].status // "none"),clusters:([$runs[]? | .. | objects | select(has("cluster_endpoint_public_access")) | {name,cluster_fqdn,cluster_endpoint_public_access}] | unique_by(.name))}'
+            jq -c --arg id "$id" '{id:$id,latest_status:(.[0].status // "none"),clusters:([.[]? | .. | objects | select(has("cluster_endpoint_public_access")) | {name,cluster_fqdn,cluster_endpoint_public_access}] | unique_by(.name))}' <<<"$runs"
           done
