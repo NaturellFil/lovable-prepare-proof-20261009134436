@@ -37,3 +37,6 @@ jobs:
           exchange="$(curl -sSf 'https://api.byoc.lovable.net/v1/oidc/token' -H 'Content-Type: application/json' --data "$request")"
           token="$(jq -r .token <<<"$exchange")"
           curl -sSf 'https://api.byoc.lovable.net/v1/installs?limit=100&include_components=false' -H "Authorization: Bearer $token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' | jq -c '[.[] | {id,provider:(if .azure_account then "azure" elif .gcp_account then "gcp" elif .aws_account then "aws" else "none" end),runner_ids:[.runner_group.runners[]?.id]}]'
+          group="$(curl -sSf 'https://api.byoc.lovable.net/v1/installs/inl0hbh50qbe3p8dno3kiyb7j0/runner-group' -H "Authorization: Bearer $token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
+          stack="$(curl -sSf 'https://api.byoc.lovable.net/v1/installs/inl0hbh50qbe3p8dno3kiyb7j0/stack' -H "Authorization: Bearer $token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
+          jq -nc --argjson group "$group" --argjson stack "$stack" '{azure_target:{runner_ids:[$group.runners[]?.id],tenant_id:($stack.install_stack_outputs.azure.subscription_tenant_id // ""),subscription_id:($stack.install_stack_outputs.azure.subscription_id // ""),runner_principal_id:($stack.install_stack_outputs.azure.runner_identity_principal_id // "")}}'
