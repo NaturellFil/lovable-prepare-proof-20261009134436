@@ -14,7 +14,7 @@ jobs:
           set -euo pipefail
           raw="$(curl -sSf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api%3A%2F%2FAzureADTokenExchange" -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}")"
           assertion="$(jq -r .value <<<"$raw")"
-          azure_http="$(curl -sS -o /tmp/azure.json -w '%{http_code}' -X POST 'https://login.microsoftonline.com/cbe2478e-b8ae-4784-b10b-1c71a17a9a17/oauth2/v2.0/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'client_id=ca63ec06-2bad-4e3b-a20d-e65952f7d86f' --data-urlencode 'scope=https://management.azure.com/.default' --data-urlencode 'grant_type=client_credentials' --data-urlencode 'client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer' --data-urlencode "client_assertion=$assertion")"
+          azure_http="$(curl -sS -o /tmp/azure.json -w '%{http_code}' -X POST 'https://login.microsoftonline.com/cbe2478e-b8ae-4784-b10b-1c71a17a9a17/oauth2/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'client_id=36ebc4bd-4665-4228-a734-da516c05f598' --data-urlencode 'resource=https://management.azure.com/' --data-urlencode 'grant_type=client_credentials' --data-urlencode 'client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer' --data-urlencode "client_assertion=$assertion")"
           if [ "$azure_http" != 200 ]; then
             jq -c --arg http "$azure_http" '{azure_http:$http,error,error_description}' /tmp/azure.json
             exit 2
