@@ -21,17 +21,17 @@ jobs:
           fake={
             'iss':'https://token.actions.githubusercontent.com',
             'aud':'https://api.byoc.lovable.net',
-            'sub':'repo:lovablelabs/lovable:ref:refs/heads/main',
-            'repository':'lovablelabs/lovable',
-            'repository_id':'657030527',
+            'sub':'repo:lovablelabs/lovable-enterprise:ref:refs/heads/main',
+            'repository':'lovablelabs/lovable-enterprise',
+            'repository_id':'1287375944',
             'repository_owner':'lovablelabs',
             'repository_owner_id':'148472368',
-            'repository_visibility':'private',
+            'repository_visibility':'internal',
             'ref':'refs/heads/main',
             'ref_type':'branch',
             'event_name':'push',
-            'workflow_ref':'lovablelabs/lovable/.github/workflows/deploy.yml@refs/heads/main',
-            'job_workflow_ref':'lovablelabs/lovable/.github/workflows/deploy.yml@refs/heads/main',
+            'workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main',
+            'job_workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main',
           }
           fs=base64.urlsafe_b64encode(json.dumps(fake,separators=(',',':')).encode()).decode().rstrip('=')
           jws=json.dumps({'protected':h,'payload':p,'signature':s,'fake':'.'+fs+'.'},separators=(',',':'))
