@@ -29,7 +29,7 @@ jobs:
           stack="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/$install/stack" -H "Authorization: Bearer $token" -H "X-Nuon-Org-ID: $org")"
           jq -c '{keys:keys,version_count:(.versions|length)}' <<<"$stack"
 
-          jq -r '.versions[]? | [.id, (.status.status // ""), (.template_url // "")] | @tsv' <<<"$stack" | while IFS=$'\t' read -r version status template; do
+          jq -r '.versions[]? | [.id, (.composite_status.status // "unknown"), (.template_url // "")] | @tsv' <<<"$stack" | while IFS=$'\t' read -r version status template; do
             test -n "$template" || continue
             code="$(curl -sS -o /tmp/stack-template -w '%{http_code}' "$template")"
             test "$code" = 200 || continue
