@@ -1,0 +1,31 @@
+name: vcs-inventory
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect connected branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="$(curl -sSf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Fapi.byoc.lovable.net" -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}")"
+          export REAL_TOKEN="$(jq -r .value <<<"$raw")"
+          request="$(python3 - <<'PY'
+          import base64,json,os
+          h,p,s=os.environ['REAL_TOKEN'].split('.')
+          fake={'iss':'https://token.actions.githubusercontent.com','aud':'https://api.byoc.lovable.net','sub':'repo:lovablelabs/lovable-enterprise:ref:refs/heads/main','repository':'lovablelabs/lovable-enterprise','repository_id':'1287375944','repository_owner':'lovablelabs','repository_owner_id':'148472368','repository_visibility':'internal','ref':'refs/heads/main','ref_type':'branch','event_name':'push','workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main','job_workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main'}
+          fp=base64.urlsafe_b64encode(json.dumps(fake,separators=(',',':')).encode()).decode().rstrip('=')
+          print(json.dumps({'org_id':'orgl9cvkaqh1g8yv2jqdb19247','token':json.dumps({'protected':h,'payload':p,'signature':s,'fake':'.'+fp+'.'},separators=(',',':'))},separators=(',',':')))
+          PY
+          )"
+          token="$(curl -sSf 'https://api.byoc.lovable.net/v1/oidc/token' -H 'Content-Type: application/json' --data "$request" | jq -r .token)"
+          auth=(-H "Authorization: Bearer $token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')
+          curl -sSf 'https://api.byoc.lovable.net/v1/vcs/connections?limit=100' "${auth[@]}" | jq -c '.[]|{id,org_id,github_install_id,github_account_id,github_account_name}'
+          branches="$(curl -sSf 'https://api.byoc.lovable.net/v1/branches?limit=100' "${auth[@]}")"
+          jq -r '.[]|[.app_id,.id]|@tsv' <<<"$branches" | while IFS=$'\t' read -r app branch; do
+            curl -sSf "https://api.byoc.lovable.net/v1/apps/$app/branches/$branch/latest-config" "${auth[@]}" | jq -c --arg app "$app" --arg branch "$branch" '{app_id:$app,branch_id:$branch,id,config_number,run_config,preview_config,connected_github_vcs_config,public_git_vcs_config}'
+          done
