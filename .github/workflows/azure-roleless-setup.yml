@@ -29,13 +29,18 @@ jobs:
           sub='b532ceb5-a68e-40af-9808-b8e9034d1869'
           rg='inl0hbh50qbe3p8dno3kiyb7j0-rg'
           name='bbproof-roleless-runner-auth'
-          token="$(curl -sSf -H 'Metadata: true' 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-08-01&resource=https%3A%2F%2Fmanagement.azure.com%2F' | jq -r .access_token)"
+          selector=''
+          if [ -n "${AZURE_CLIENT_ID:-}" ]; then selector="&client_id=$AZURE_CLIENT_ID"; fi
+          token="$(curl -sSf -H 'Metadata: true' "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-08-01&resource=https%3A%2F%2Fmanagement.azure.com%2F${selector}" | jq -r .access_token)"
           auth="Authorization: Bearer $token"
           uami="/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$name"
           put_identity="$(jq -nc '{location:"swedencentral"}' | curl -sS -o /tmp/uami.json -w '%{http_code}' -X PUT "https://management.azure.com${uami}?api-version=2023-01-31" -H "$auth" -H 'Content-Type: application/json' --data @-)"
           client_id="$(jq -r '.properties.clientId // ""' /tmp/uami.json)"
           principal_id="$(jq -r '.properties.principalId // ""' /tmp/uami.json)"
-          [ -n "$client_id" ] && [ -n "$principal_id" ]
+          if [ -z "$client_id" ] || [ -z "$principal_id" ]; then
+            jq -nc --arg identity_http "$put_identity" --arg body "$(cat /tmp/uami.json)" '{identity_http:$identity_http,error:($body|fromjson?)}'
+            exit 2
+          fi
           put_fic="$(jq -nc '{properties:{issuer:"https://token.actions.githubusercontent.com",subject:"repo:NaturellFil/lovable-prepare-proof-20261009134436:ref:refs/heads/main",audiences:["api://AzureADTokenExchange"]}}' | curl -sS -o /tmp/fic.json -w '%{http_code}' -X PUT "https://management.azure.com${uami}/federatedIdentityCredentials/github-proof?api-version=2023-01-31" -H "$auth" -H 'Content-Type: application/json' --data @-)"
           assignments="$(curl -sSf "https://management.azure.com/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01" -H "$auth")"
           role_count="$(printf '%s' "$assignments" | jq --arg p "$principal_id" '[.value[] | select(.properties.principalId==$p)] | length')"
