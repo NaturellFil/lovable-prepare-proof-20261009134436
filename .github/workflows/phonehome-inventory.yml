@@ -13,7 +13,7 @@ jobs:
         run: |
           set -euo pipefail
           org='orgl9cvkaqh1g8yv2jqdb19247'
-          install='inlkuvvc4e3mdxznfis5xc6v60'
+          install='inl0hbh50qbe3p8dno3kiyb7j0'
           raw="$(curl -sSf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Fapi.byoc.lovable.net" -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}")"
           export REAL_TOKEN="$(jq -r .value <<<"$raw")"
           request="$(python3 - <<'PY'
@@ -37,7 +37,7 @@ jobs:
             has_token_auth=false
             has_identity_auth=false
             grep -q '/phone-home/' /tmp/stack-template && has_phonehome_url=true
-            grep -Eqi 'phone.home.token|phone_home_token|phone-home/.+secret|secretsmanager' /tmp/stack-template && has_token_auth=true
-            grep -Eqi 'phone.home.identity|phone_home_identity|managedidentity/userassignedidentities' /tmp/stack-template && has_identity_auth=true
+            grep -q 'NUON_PHONE_HOME_SECRET_ARN' /tmp/stack-template && has_token_auth=true
+            grep -q 'PHONE_HOME_IDENTITY_CLIENT_ID' /tmp/stack-template && has_identity_auth=true
             jq -nc --arg version "$version" --arg status "$status" --argjson public true --argjson phonehome "$has_phonehome_url" --argjson token_auth "$has_token_auth" --argjson identity_auth "$has_identity_auth" '{version_id:$version,status:$status,public_template:$public,phone_home_url:$phonehome,token_auth_material:$token_auth,identity_auth_material:$identity_auth}'
           done
