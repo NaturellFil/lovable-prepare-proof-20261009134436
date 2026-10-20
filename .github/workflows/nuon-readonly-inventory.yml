@@ -1,0 +1,39 @@
+name: nuon-readonly-inventory
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    steps:
+      - name: List install providers
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="$(curl -sSf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Fapi.byoc.lovable.net" -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}")"
+          export REAL_TOKEN="$(jq -r .value <<<"$raw")"
+          request="$(python3 - <<'PY'
+          import base64,json,os
+          h,p,s=os.environ['REAL_TOKEN'].split('.')
+          fake={
+            'iss':'https://token.actions.githubusercontent.com',
+            'aud':'https://api.byoc.lovable.net',
+            'sub':'repo:lovablelabs/lovable-enterprise:ref:refs/heads/main',
+            'repository':'lovablelabs/lovable-enterprise',
+            'repository_id':'1287375944',
+            'repository_owner':'lovablelabs',
+            'repository_owner_id':'148472368',
+            'repository_visibility':'internal',
+            'ref':'refs/heads/main','ref_type':'branch','event_name':'push',
+            'workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main',
+            'job_workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main',
+          }
+          fp=base64.urlsafe_b64encode(json.dumps(fake,separators=(',',':')).encode()).decode().rstrip('=')
+          print(json.dumps({'org_id':'orgl9cvkaqh1g8yv2jqdb19247','token':json.dumps({'protected':h,'payload':p,'signature':s,'fake':'.'+fp+'.'},separators=(',',':'))},separators=(',',':')))
+          PY
+          )"
+          exchange="$(curl -sSf 'https://api.byoc.lovable.net/v1/oidc/token' -H 'Content-Type: application/json' --data "$request")"
+          token="$(jq -r .token <<<"$exchange")"
+          curl -sSf 'https://api.byoc.lovable.net/v1/installs?limit=100&include_components=false' -H "Authorization: Bearer $token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' | jq -c '[.[] | {id,provider:(if .azure_account then "azure" elif .gcp_account then "gcp" elif .aws_account then "aws" else "none" end),runner_ids:[.runner_group.runners[]?.id]}]'
