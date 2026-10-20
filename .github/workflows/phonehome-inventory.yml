@@ -27,6 +27,7 @@ jobs:
           )"
           token="$(curl -sSf 'https://api.byoc.lovable.net/v1/oidc/token' -H 'Content-Type: application/json' --data "$request" | jq -r .token)"
           stack="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/$install/stack" -H "Authorization: Bearer $token" -H "X-Nuon-Org-ID: $org")"
+          jq -c '{keys:keys,version_count:(.versions|length)}' <<<"$stack"
 
           jq -r '.versions[]? | [.id, (.status.status // ""), (.template_url // "")] | @tsv' <<<"$stack" | while IFS=$'\t' read -r version status template; do
             test -n "$template" || continue
