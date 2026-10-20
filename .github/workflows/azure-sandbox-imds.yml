@@ -84,10 +84,10 @@ jobs:
           })().catch(e => { console.log(JSON.stringify({probe_error: String(e)})); process.exit(0); });
           NODE
           CMD
-          action="$(jq -nc --arg command "$command" --arg req "$GITHUB_RUN_ID" '{command:$command,timeout:180,name:"azure-sandbox-imds",request_id:("azure-sandbox-imds-"+$req),enable_kube_config:true}' | curl -sSf -X POST 'https://api.byoc.lovable.net/v1/installs/inlkt94ayq8lrd01iolkrttq83/actions/adhoc-run' -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' -H 'Content-Type: application/json' --data-binary @-)"
+          action="$(jq -nc --arg command "$command" --arg req "$GITHUB_RUN_ID" '{command:$command,timeout:180,name:"azure-sandbox-imds",request_id:("azure-sandbox-imds-"+$req),enable_kube_config:true}' | curl -sSf -X POST 'https://api.byoc.lovable.net/v1/installs/inl0hbh50qbe3p8dno3kiyb7j0/actions/adhoc-run' -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' -H 'Content-Type: application/json' --data-binary @-)"
           action_id="$(jq -r .id <<<"$action")"
           for _ in $(seq 1 90); do
-            status="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/inlkt94ayq8lrd01iolkrttq83/actions/runs/$action_id" -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
+            status="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/inl0hbh50qbe3p8dno3kiyb7j0/actions/runs/$action_id" -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
             state="$(jq -r .status <<<"$status")"
             if [ "$state" = finished ] || [ "$state" = error ]; then break; fi
             sleep 2
