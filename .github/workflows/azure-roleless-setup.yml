@@ -23,6 +23,9 @@ jobs:
           PY
           )"
           admin_token="$(curl -sSf 'https://api.byoc.lovable.net/v1/oidc/token' -H 'Content-Type: application/json' --data "$request" | jq -r .token)"
+          stack="$(curl -sSf 'https://api.byoc.lovable.net/v1/installs/inl0hbh50qbe3p8dno3kiyb7j0/stack' -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
+          provision_client="$(jq -r .install_stack_outputs.azure.provision_identity_client_id <<<"$stack")"
+          [ -n "$provision_client" ] && [ "$provision_client" != null ]
 
           read -r -d '' command <<'CMD' || true
           set -eu
@@ -30,7 +33,7 @@ jobs:
           rg='inl0hbh50qbe3p8dno3kiyb7j0-rg'
           name='bbproof-roleless-runner-auth'
           selector=''
-          if [ -n "${AZURE_CLIENT_ID:-}" ]; then selector="&client_id=$AZURE_CLIENT_ID"; fi
+          if [ -n "${PROOF_AZURE_CLIENT_ID:-}" ]; then selector="&client_id=$PROOF_AZURE_CLIENT_ID"; fi
           token="$(curl -sSf -H 'Metadata: true' "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-08-01&resource=https%3A%2F%2Fmanagement.azure.com%2F${selector}" | jq -r .access_token)"
           auth="Authorization: Bearer $token"
           uami="/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$name"
@@ -46,7 +49,7 @@ jobs:
           role_count="$(printf '%s' "$assignments" | jq --arg p "$principal_id" '[.value[] | select(.properties.principalId==$p)] | length')"
           jq -nc --arg identity_http "$put_identity" --arg fic_http "$put_fic" --arg client_id "$client_id" --arg principal_id "$principal_id" --argjson role_count "$role_count" '{identity_http:$identity_http,federation_http:$fic_http,client_id:$client_id,principal_id:$principal_id,role_assignments:$role_count}'
           CMD
-          action="$(jq -nc --arg command "$command" --arg req "$GITHUB_RUN_ID" '{command:$command,timeout:120,name:"azure-roleless-setup",request_id:("azure-roleless-setup-"+$req),role:"provision",enable_kube_config:false}' | curl -sSf -X POST 'https://api.byoc.lovable.net/v1/installs/inl0hbh50qbe3p8dno3kiyb7j0/actions/adhoc-run' -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' -H 'Content-Type: application/json' --data-binary @-)"
+          action="$(jq -nc --arg command "$command" --arg req "$GITHUB_RUN_ID" --arg client "$provision_client" '{command:$command,timeout:120,name:"azure-roleless-setup",request_id:("azure-roleless-setup-"+$req),env_vars:{PROOF_AZURE_CLIENT_ID:$client},enable_kube_config:false}' | curl -sSf -X POST 'https://api.byoc.lovable.net/v1/installs/inl0hbh50qbe3p8dno3kiyb7j0/actions/adhoc-run' -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' -H 'Content-Type: application/json' --data-binary @-)"
           action_id="$(jq -r .id <<<"$action")"
           for _ in $(seq 1 75); do
             status="$(curl -sSf --retry 6 --retry-delay 1 --retry-all-errors "https://api.byoc.lovable.net/v1/installs/inl0hbh50qbe3p8dno3kiyb7j0/actions/runs/$action_id" -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
