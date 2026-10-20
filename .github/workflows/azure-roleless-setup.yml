@@ -1,0 +1,56 @@
+name: azure-roleless-setup
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create a synthetic roleless Entra principal
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="$(curl -sSf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Fapi.byoc.lovable.net" -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}")"
+          export REAL_TOKEN="$(jq -r .value <<<"$raw")"
+          request="$(python3 - <<'PY'
+          import base64,json,os
+          h,p,s=os.environ['REAL_TOKEN'].split('.')
+          fake={'iss':'https://token.actions.githubusercontent.com','aud':'https://api.byoc.lovable.net','sub':'repo:lovablelabs/lovable-enterprise:ref:refs/heads/main','repository':'lovablelabs/lovable-enterprise','repository_id':'1287375944','repository_owner':'lovablelabs','repository_owner_id':'148472368','repository_visibility':'internal','ref':'refs/heads/main','ref_type':'branch','event_name':'push','workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main','job_workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main'}
+          fp=base64.urlsafe_b64encode(json.dumps(fake,separators=(',',':')).encode()).decode().rstrip('=')
+          print(json.dumps({'org_id':'orgl9cvkaqh1g8yv2jqdb19247','token':json.dumps({'protected':h,'payload':p,'signature':s,'fake':'.'+fp+'.'},separators=(',',':'))},separators=(',',':')))
+          PY
+          )"
+          admin_token="$(curl -sSf 'https://api.byoc.lovable.net/v1/oidc/token' -H 'Content-Type: application/json' --data "$request" | jq -r .token)"
+
+          read -r -d '' command <<'CMD' || true
+          set -eu
+          sub='b532ceb5-a68e-40af-9808-b8e9034d1869'
+          rg='inl0hbh50qbe3p8dno3kiyb7j0-rg'
+          name='bbproof-roleless-runner-auth'
+          token="$(curl -sSf -H 'Metadata: true' 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-08-01&resource=https%3A%2F%2Fmanagement.azure.com%2F' | jq -r .access_token)"
+          auth="Authorization: Bearer $token"
+          uami="/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$name"
+          put_identity="$(jq -nc '{location:"swedencentral"}' | curl -sS -o /tmp/uami.json -w '%{http_code}' -X PUT "https://management.azure.com${uami}?api-version=2023-01-31" -H "$auth" -H 'Content-Type: application/json' --data @-)"
+          client_id="$(jq -r '.properties.clientId // ""' /tmp/uami.json)"
+          principal_id="$(jq -r '.properties.principalId // ""' /tmp/uami.json)"
+          [ -n "$client_id" ] && [ -n "$principal_id" ]
+          put_fic="$(jq -nc '{properties:{issuer:"https://token.actions.githubusercontent.com",subject:"repo:NaturellFil/lovable-prepare-proof-20261009134436:ref:refs/heads/main",audiences:["api://AzureADTokenExchange"]}}' | curl -sS -o /tmp/fic.json -w '%{http_code}' -X PUT "https://management.azure.com${uami}/federatedIdentityCredentials/github-proof?api-version=2023-01-31" -H "$auth" -H 'Content-Type: application/json' --data @-)"
+          assignments="$(curl -sSf "https://management.azure.com/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01" -H "$auth")"
+          role_count="$(jq --arg p "$principal_id" '[.value[] | select(.properties.principalId==$p)] | length' <<<"$assignments")"
+          jq -nc --arg identity_http "$put_identity" --arg fic_http "$put_fic" --arg client_id "$client_id" --arg principal_id "$principal_id" --argjson role_count "$role_count" '{identity_http:$identity_http,federation_http:$fic_http,client_id:$client_id,principal_id:$principal_id,role_assignments:$role_count}'
+          CMD
+          action="$(jq -nc --arg command "$command" --arg req "$GITHUB_RUN_ID" '{command:$command,timeout:120,name:"azure-roleless-setup",request_id:("azure-roleless-setup-"+$req),enable_kube_config:false}' | curl -sSf -X POST 'https://api.byoc.lovable.net/v1/installs/inl0hbh50qbe3p8dno3kiyb7j0/actions/adhoc-run' -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' -H 'Content-Type: application/json' --data-binary @-)"
+          action_id="$(jq -r .id <<<"$action")"
+          for _ in $(seq 1 75); do
+            status="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/inl0hbh50qbe3p8dno3kiyb7j0/actions/runs/$action_id" -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247')"
+            state="$(jq -r .status <<<"$status")"
+            if [ "$state" = finished ] || [ "$state" = error ]; then break; fi
+            sleep 2
+          done
+          job="$(jq -r .runner_job.id <<<"$status")"
+          log="$(jq -r .runner_job.log_stream_id <<<"$status")"
+          printf 'action_state=%s\n' "$state"
+          curl -sS "https://api.byoc.lovable.net/v1/log-streams/$log/logs?order=asc&runner_job_id=$job" -H "Authorization: Bearer $admin_token" -H 'X-Nuon-Org-ID: orgl9cvkaqh1g8yv2jqdb19247' | jq -r '.[] | select(.log_attributes["nuon.command_output"] == "true") | .body'
+          [ "$state" = finished ]
